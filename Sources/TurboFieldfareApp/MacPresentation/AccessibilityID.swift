@@ -55,6 +55,16 @@ public enum AccessibilityID: String, CaseIterable, Sendable {
     case transcriptCopyResponse = "transcript.copyResponse"
     case transcriptLoad = "transcript.load"
     case transcriptReload = "transcript.reload"
+    case transcriptCodeRunner = "transcript.codeRunner"
+
+    case runnerBlock = "runner.block"
+    case runnerLanguage = "runner.language"
+    case runnerCode = "runner.code"
+    case runnerSave = "runner.save"
+    case runnerRun = "runner.run"
+    case runnerConfirmRun = "runner.confirmRun"
+    case runnerStop = "runner.stop"
+    case runnerOutput = "runner.output"
 
     case noticeRaiseContext = "notice.raiseContext"
     case noticeNewChat = "notice.newChat"

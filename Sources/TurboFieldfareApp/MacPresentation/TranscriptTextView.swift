@@ -71,6 +71,8 @@ public final class TranscriptTextView: NSTextView {
     public var lastAnswerText: (() -> String)?
     public var conversationText: (() -> String)?
     public var startNewChat: (() -> Void)?
+    /// Opens the Code Runner on one listing of an answer.
+    public var openInCodeRunner: (([ExtractedCodeBlock], Int) -> Void)?
 
     /// The transcript's whole context menu, built here rather than added to
     /// AppKit's.
@@ -89,6 +91,7 @@ public final class TranscriptTextView: NSTextView {
 
         if let answer = answerAtCharacterIndex?(index), !answer.isEmpty {
             add(to: menu, title: "Copy This Answer", text: answer)
+            addCodeRunnerItems(to: menu, answer: answer)
         }
         if selectedRange().length > 0 {
             let item = NSMenuItem(title: "Copy Selection",
@@ -110,6 +113,49 @@ public final class TranscriptTextView: NSTextView {
             menu.addItem(item)
         }
         return menu.items.isEmpty ? nil : menu
+    }
+
+    /// One item per listing in the answer, so a turn with several blocks can
+    /// send the one the reader means.
+    private func addCodeRunnerItems(to menu: NSMenu, answer: String) {
+        guard openInCodeRunner != nil else { return }
+        let blocks = CodeBlockExtractor.blocks(in: answer)
+        guard !blocks.isEmpty else { return }
+        if blocks.count == 1 {
+            menu.addItem(codeRunnerItem(title: "Open Code in Runner…", blocks: blocks, index: 0))
+            return
+        }
+        let parent = NSMenuItem(title: "Open Code in Runner", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for block in blocks {
+            submenu.addItem(codeRunnerItem(title: block.summary, blocks: blocks, index: block.index))
+        }
+        parent.submenu = submenu
+        menu.addItem(parent)
+    }
+
+    private func codeRunnerItem(
+        title: String, blocks: [ExtractedCodeBlock], index: Int
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(openCodeRunner(_:)),
+                              keyEquivalent: "")
+        item.target = self
+        item.representedObject = CodeRunnerSelection(blocks: blocks, index: index)
+        return item
+    }
+
+    @objc private func openCodeRunner(_ sender: NSMenuItem) {
+        guard let selection = sender.representedObject as? CodeRunnerSelection else { return }
+        openInCodeRunner?(selection.blocks, selection.index)
+    }
+
+    private final class CodeRunnerSelection: NSObject {
+        let blocks: [ExtractedCodeBlock]
+        let index: Int
+        init(blocks: [ExtractedCodeBlock], index: Int) {
+            self.blocks = blocks
+            self.index = index
+        }
     }
 
     private func add(to menu: NSMenu, title: String, text: String) {

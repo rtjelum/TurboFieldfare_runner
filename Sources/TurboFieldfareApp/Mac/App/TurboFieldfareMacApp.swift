@@ -86,6 +86,7 @@ private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
 struct TurboFieldfareMacApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: ForegroundAppDelegate
     @StoredState private var model: AppModel
+    @StoredState private var codeRunner: CodeRunner
 
     init() {
         let model = AppModel(
@@ -93,12 +94,14 @@ struct TurboFieldfareMacApp: App {
             visionRuntimeSupported: AppModel.currentDeviceSupportsVisionRuntime,
             settingsPersistenceEnabled: true)
         _model = StoredState(initialValue: model)
+        _codeRunner = StoredState(initialValue: CodeRunner())
         MainActor.assumeIsolated { ForegroundAppDelegate.model = model }
     }
 
     var body: some Scene {
         Window("TurboFieldfare", id: "main") {
             RootView(model: model)
+                .environment(codeRunner)
                 // The three columns at their minimums, plus their dividers.
                 .frame(minWidth: 1112, minHeight: 560)
                 // Once, when the window first appears: the setting is read
@@ -130,7 +133,15 @@ struct TurboFieldfareMacApp: App {
         // dividers), so the window never opens already clamped.
         .defaultSize(width: 1200, height: 780)
         .windowResizability(.contentMinSize)
+
+        Window("Code Runner", id: CodeRunnerWindow.id) {
+            CodeRunnerView(runner: codeRunner)
+        }
+        .defaultSize(width: 760, height: 620)
         .commands {
+            CommandMenu("Tools") {
+                CodeRunnerMenuButton(model: model, runner: codeRunner)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") { model.newChat() }
                     .keyboardShortcut("n", modifiers: .command)

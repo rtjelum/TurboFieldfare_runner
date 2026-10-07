@@ -7,6 +7,8 @@ import SwiftUI
 struct OutputPaneView: View {
     let model: AppModel
     @StoredState private var responseCopyFeedbackID: UUID?
+    @Environment(CodeRunner.self) private var codeRunner
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Group {
@@ -47,6 +49,7 @@ struct OutputPaneView: View {
             lastAnswer: model.outputResponsePlainText,
             conversationPlainText: model.outputConversationPlainText,
             requestNewChat: model.isTurnInFlight ? nil : { model.newChat() },
+            openInCodeRunner: { blocks, index in openCodeRunner(blocks, index) },
             // Blank while a stored copy is on screen. The live fields hold the
             // chat the KV is still keeping, which is a different conversation
             // from the one being read, and drawing it here would append one
@@ -62,9 +65,17 @@ struct OutputPaneView: View {
             runIdentity: model.runIdentity)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
-                if !model.isRunning && !model.outputResponsePlainText.isEmpty {
-                    copyResponseButton
-                        .padding(8)
+                if !model.isRunning {
+                    let code = model.displayedCodeBlocks
+                    HStack(spacing: 6) {
+                        if !code.blocks.isEmpty {
+                            codeRunnerButton(code)
+                        }
+                        if !model.outputResponsePlainText.isEmpty {
+                            copyResponseButton
+                        }
+                    }
+                    .padding(8)
                 }
             }
             .padding(.horizontal, 24)
@@ -99,6 +110,34 @@ struct OutputPaneView: View {
         .help(responseCopyFeedbackID == nil
               ? "Copy last answer"
               : "Response copied")
+    }
+
+    private func openCodeRunner(_ blocks: [ExtractedCodeBlock], _ index: Int) {
+        codeRunner.present(blocks: blocks, selecting: index)
+        openWindow(id: CodeRunnerWindow.id)
+    }
+
+    private func codeRunnerButton(
+        _ code: (blocks: [ExtractedCodeBlock], newest: Int)
+    ) -> some View {
+        Button {
+            openCodeRunner(code.blocks, code.newest)
+        } label: {
+            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(Color.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+                .background(.regularMaterial, in: Circle())
+                .overlay {
+                    Circle().stroke(.separator.opacity(0.5), lineWidth: 0.5)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open code in runner")
+        .accessibilityHint("Save or run the code blocks in this chat")
+        .accessibilityIdentifier(.transcriptCodeRunner)
+        .help("Save or run code from this chat")
     }
 
     private var emptyPlaceholderContent: some View {
@@ -315,6 +354,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
     var lastAnswer: String = ""
     var conversationPlainText: String = ""
     var requestNewChat: (() -> Void)?
+    var openInCodeRunner: (([ExtractedCodeBlock], Int) -> Void)?
     var prompt: String
     var images: [ChatImage] = []
     var output: String
@@ -361,6 +401,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         var lastAnswer = ""
         var conversationPlainText = ""
         var requestNewChat: (() -> Void)?
+        var openInCodeRunner: (([ExtractedCodeBlock], Int) -> Void)?
         /// Holds the view at the bottom from the moment a run starts until its
         /// answer begins. One scroll is not enough: image thumbnails finish
         /// loading after it and push the content back down, which is exactly
@@ -387,6 +428,9 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             transcript.lastAnswerText = { [weak self] in self?.lastAnswer ?? "" }
             transcript.conversationText = { [weak self] in self?.conversationPlainText ?? "" }
             transcript.startNewChat = { [weak self] in self?.requestNewChat?() }
+            transcript.openInCodeRunner = { [weak self] blocks, index in
+                self?.openInCodeRunner?(blocks, index)
+            }
             guard timer == nil else { return }
             // Auto-follow yields the instant the reader scrolls. Without this,
             // holding the view at the bottom through prefill fought anyone
@@ -859,6 +903,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.attach(scrollView: scrollView, textView: textView)
+        context.coordinator.openInCodeRunner = openInCodeRunner
         context.coordinator.synchronize(
             typography: typography,
             history: history,

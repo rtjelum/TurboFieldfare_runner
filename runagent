@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Launch the TurboFieldfare Mac app from the release build.
+# Builds it first if the binary is missing. Refuses to start while another
+# model process is running, because only one may hold the model at a time.
+set -euo pipefail
+
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_directory"
+
+if running="$(pgrep -fl 'TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm')"; then
+  echo "Another model process is already running; not starting a second one:" >&2
+  echo "$running" >&2
+  exit 1
+fi
+
+if [[ ! -x .build/release/TurboFieldfareMac ]]; then
+  swift build -c release
+fi
+
+exec .build/release/TurboFieldfareMac "$@"
