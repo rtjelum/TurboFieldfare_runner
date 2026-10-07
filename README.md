@@ -16,6 +16,22 @@
   <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/badge/License-Apache%202.0-2ea44f"></a>
 </p>
 
+> [!NOTE]
+> **This is a fork.** TurboFieldfare is developed at
+> [drumih/turbo-fieldfare](https://github.com/drumih/turbo-fieldfare); report
+> issues and contribute there. This copy adds a Code Runner to the Mac app:
+>
+> - Open any code block from a chat, including a reopened one, with the `</>`
+>   button, the transcript's right-click menu, or **Tools ▸ Code Runner**
+>   (⇧⌘R), then edit it, save it, and run it. Every run asks for confirmation
+>   first and runs with your account's permissions; the model never starts one.
+> - Python runs use a shared virtual environment. Packages the script imports
+>   but the environment lacks are listed in the confirmation and installed with
+>   pip before the script runs.
+> - `./runagent` launches the release Mac app, building it first if needed.
+>
+> Everything else follows upstream.
+
 <p align="center">
   <a href="#try-it">Quick start</a> ·
   <a href="docs/OPENAI_SERVER.md">Local server</a> ·
