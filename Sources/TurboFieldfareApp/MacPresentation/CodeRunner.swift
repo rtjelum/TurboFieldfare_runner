@@ -119,6 +119,8 @@ public final class CodeRunner {
         /// Imports that cannot be installed with pip, such as `tkinter`.
         public let unavailable: [String]
         public let environment: URL?
+        /// The script does not parse; see `PythonImportScan.Result`.
+        public var syntaxError: String? = nil
 
         public var commandDescription: String {
             steps.map(\.description).joined(separator: " && ")
@@ -222,7 +224,7 @@ public final class CodeRunner {
                           description: "python \(url.lastPathComponent)"))
         return RunPlan(file: url, steps: steps, packages: packages,
                        requirements: requirements, unavailable: result.unavailable,
-                       environment: environment)
+                       environment: environment, syntaxError: result.syntaxError)
     }
 
     public func run(_ plan: RunPlan) {

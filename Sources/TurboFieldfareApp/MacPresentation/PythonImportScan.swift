@@ -13,6 +13,10 @@ enum PythonImportScan {
         let install: [String]
         /// Imports pip cannot provide.
         let unavailable: [String]
+        /// Where the script fails to parse, as "line N: message". The run
+        /// still goes ahead so Python reports it in full; nothing can be
+        /// installed for a script whose imports cannot be read.
+        var syntaxError: String? = nil
     }
 
     /// A distribution name as PyPI spells one. Anything else — a leading
@@ -21,7 +25,8 @@ enum PythonImportScan {
         name.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"#, options: .regularExpression) != nil
     }
 
-    /// Prints one JSON line: `{"install": [...], "unavailable": [...]}`.
+    /// Prints one JSON line: `{"install": [...], "unavailable": [...]}`, plus
+    /// `"syntaxError"` when the script does not parse.
     /// Imports inside a `try` that handles `ImportError` are the script's own
     /// optional fallbacks and are left alone.
     static let source = #"""
@@ -45,7 +50,15 @@ PACKAGES = {
 
 path = sys.argv[1]
 with open(path, "rb") as handle:
-    tree = ast.parse(handle.read(), filename=path)
+    source = handle.read()
+try:
+    tree = ast.parse(source, filename=path)
+except SyntaxError as error:
+    where = "line %s: " % error.lineno if error.lineno else ""
+    text = (error.text or "").strip()
+    print(json.dumps({"install": [], "unavailable": [],
+                      "syntaxError": where + str(error.msg) + (" — " + text if text else "")}))
+    sys.exit(0)
 sys.path.insert(0, os.path.dirname(os.path.abspath(path)))
 
 def catches_import_error(node):

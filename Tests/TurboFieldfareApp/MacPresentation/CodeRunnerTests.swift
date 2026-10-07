@@ -149,6 +149,26 @@ import Testing
         #expect(runner.phase == .idle)
     }
 
+    /// A model typo must not block the run: the plan says where the script
+    /// is broken and still runs it, so Python can report the error in full.
+    @Test func scriptThatDoesNotParseStillGetsAPlan() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodeRunnerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = directory.appendingPathComponent("broken.py")
+        try "import requests\nif 0 <= row < 9 and  <= col < 9:\n    pass\n"
+            .write(to: script, atomically: true, encoding: .utf8)
+
+        let runner = CodeRunner(pythonEnvironment: directory.appendingPathComponent("venv"))
+        runner.present(blocks: [ExtractedCodeBlock(index: 0, language: "python", code: "")])
+        let plan = try await runner.prepare(script)
+        #expect(plan.syntaxError?.hasPrefix("line 2: ") == true)
+        #expect(plan.packages.isEmpty)
+        #expect(plan.steps.count == 1)
+        #expect(plan.steps[0].arguments == [script.path])
+    }
+
     @Test func packageNamesThatPipWouldMisreadAreRefused() {
         #expect(PythonImportScan.isSafePackageName("python-dateutil"))
         #expect(PythonImportScan.isSafePackageName("discord.py"))

@@ -236,6 +236,11 @@ struct CodeRunnerView: View {
 
     private func confirmationMessage(_ plan: CodeRunner.RunPlan) -> String {
         var parts: [String] = []
+        if let syntaxError = plan.syntaxError {
+            parts.append("This script has a syntax error (\(syntaxError)), "
+                + "so it will stop before doing anything and its packages cannot be "
+                + "checked. Cancel to fix it in the editor.")
+        }
         if !plan.packages.isEmpty || plan.requirements != nil {
             var what = plan.packages.joined(separator: ", ")
             if plan.requirements != nil {
