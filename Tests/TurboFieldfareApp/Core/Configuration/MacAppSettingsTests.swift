@@ -109,6 +109,35 @@ import Testing
         #expect(decoded.version == MacAppSettings.currentVersion)
     }
 
+    @Test func appearanceRoundTripsAndDefaultsToSystem() throws {
+        let dark = MacAppSettings(textSize: .large, appearance: .dark)
+        let decoded = try JSONDecoder().decode(
+            MacAppSettings.self, from: JSONEncoder().encode(dark))
+        #expect(decoded.appearance == .dark)
+
+        var json = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(dark)) as? [String: Any])
+        json.removeValue(forKey: "appearance")
+        let older = try JSONDecoder().decode(
+            MacAppSettings.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(older.appearance == .system)
+        #expect(older.textSize == .large)
+    }
+
+    @Test(arguments: ["\"sepia\"", "3", "null"])
+    func invalidAppearanceFallsBackWithoutResettingOtherSettings(_ value: String) throws {
+        let initial = MacAppSettings(contextTokens: 4_096, textSize: .largest, appearance: .dark)
+        var json = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(initial)) as? [String: Any])
+        json["appearance"] = try JSONSerialization.jsonObject(
+            with: Data(value.utf8), options: .fragmentsAllowed)
+        let decoded = try JSONDecoder().decode(
+            MacAppSettings.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(decoded.appearance == .system)
+        #expect(decoded.contextTokens == 4_096)
+        #expect(decoded.textSize == .largest)
+    }
+
     @Test(arguments: ["null", "42", "\"invalid\"", "\"00000000-0000-0000-0000-000000000001\""])
     func obsoleteSelectionIsIgnoredWithoutResettingPreferences(_ selection: String) throws {
         let initial = MacAppSettings(contextTokens: 4_096, textSize: .largest, sidebarVisible: false)

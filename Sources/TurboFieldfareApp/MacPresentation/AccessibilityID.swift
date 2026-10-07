@@ -16,6 +16,7 @@ public enum AccessibilityID: String, CaseIterable, Sendable {
     case settingsTextSizeLarger = "settings.textSize.larger"
     case settingsTextSizeExtraLarge = "settings.textSize.extraLarge"
     case settingsTextSizeLargest = "settings.textSize.largest"
+    case settingsAppearance = "settings.appearance"
 
     public static func textSizeOption(_ size: AppTextSize) -> AccessibilityID {
         switch size {

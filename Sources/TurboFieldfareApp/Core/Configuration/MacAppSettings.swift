@@ -17,6 +17,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var newlineShortcut: AppNewlineShortcut = .return
     var showPromptExamples: Bool = true
     var textSize: AppTextSize = .standard
+    var appearance: AppAppearance = .system
     /// Whether the list of chats is showing. Remembered because hiding it is a
     /// choice about how the window looks, and a window that forgot it every
     /// launch would be making that choice again for the user each time.
@@ -41,6 +42,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case newlineShortcut
         case showPromptExamples
         case textSize
+        case appearance
         case sidebarVisible
         case inspectorVisible
         case visionResidencyPolicy
@@ -60,6 +62,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          newlineShortcut: AppNewlineShortcut = .return,
          showPromptExamples: Bool = true,
          textSize: AppTextSize = .standard,
+         appearance: AppAppearance = .system,
          sidebarVisible: Bool = true,
          inspectorVisible: Bool = true,
          visionResidencyPolicy: VisionResidencyPolicy = .onDemand,
@@ -77,6 +80,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.newlineShortcut = newlineShortcut
         self.showPromptExamples = showPromptExamples
         self.textSize = textSize
+        self.appearance = appearance
         self.sidebarVisible = sidebarVisible
         self.inspectorVisible = inspectorVisible
         self.visionResidencyPolicy = visionResidencyPolicy
@@ -111,6 +115,16 @@ struct MacAppSettings: Codable, Equatable, Sendable {
                 FileHandle.standardError.write(Data(
                     "Invalid Mac app setting textSize: unsupported value or type; using 100%.\n".utf8))
                 textSize = .standard
+            }
+        }
+        // Same isolation as textSize: a bad value falls back on its own.
+        if container.contains(.appearance) {
+            do {
+                appearance = try container.decode(AppAppearance.self, forKey: .appearance)
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "Invalid Mac app setting appearance: unsupported value or type; following the system.\n".utf8))
+                appearance = .system
             }
         }
         // Additive, like every field around it: absent means the default, so

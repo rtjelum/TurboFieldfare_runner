@@ -78,6 +78,7 @@ public final class AppModel {
     public private(set) var newlineShortcut: AppNewlineShortcut = .return
     public private(set) var showPromptExamples: Bool = true
     public private(set) var textSize: AppTextSize = .standard
+    public private(set) var appearance: AppAppearance = .system
     /// Whether the list of chats is showing. Persisted, so the window comes
     /// back the way it was left.
     public private(set) var isSidebarVisible: Bool = true
@@ -265,6 +266,7 @@ public final class AppModel {
         self.newlineShortcut = settings.newlineShortcut
         self.showPromptExamples = settings.showPromptExamples
         self.textSize = settings.textSize
+        self.appearance = settings.appearance
         self.isSidebarVisible = settings.sidebarVisible
         self.isInspectorVisible = settings.inspectorVisible
         self.loadModelOnLaunch = settings.loadModelOnLaunch
@@ -895,6 +897,12 @@ public final class AppModel {
     public func setTextSize(_ size: AppTextSize) {
         guard textSize != size else { return }
         textSize = size
+        persistSettings()
+    }
+
+    public func setAppearance(_ appearance: AppAppearance) {
+        guard self.appearance != appearance else { return }
+        self.appearance = appearance
         persistSettings()
     }
 
@@ -2061,6 +2069,7 @@ public final class AppModel {
         newlineShortcut = settings.newlineShortcut
         showPromptExamples = settings.showPromptExamples
         textSize = settings.textSize
+        appearance = settings.appearance
         isSidebarVisible = settings.sidebarVisible
         isInspectorVisible = settings.inspectorVisible
         loadModelOnLaunch = settings.loadModelOnLaunch
@@ -2080,6 +2089,7 @@ public final class AppModel {
             newlineShortcut: newlineShortcut,
             showPromptExamples: showPromptExamples,
             textSize: textSize,
+            appearance: appearance,
             sidebarVisible: isSidebarVisible,
             inspectorVisible: isInspectorVisible,
             visionResidencyPolicy: runtimeOptions.visionResidencyPolicy,

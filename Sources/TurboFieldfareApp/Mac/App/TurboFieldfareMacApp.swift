@@ -102,6 +102,16 @@ struct TurboFieldfareMacApp: App {
         Window("TurboFieldfare", id: "main") {
             RootView(model: model)
                 .environment(codeRunner)
+                // On NSApp rather than a SwiftUI color scheme, so the AppKit
+                // transcript, menus, panels and the Code Runner window all
+                // switch together.
+                .onChange(of: model.appearance, initial: true) { _, appearance in
+                    NSApp.appearance = switch appearance {
+                    case .system: nil
+                    case .light: NSAppearance(named: .aqua)
+                    case .dark: NSAppearance(named: .darkAqua)
+                    }
+                }
                 // The three columns at their minimums, plus their dividers.
                 .frame(minWidth: 1112, minHeight: 560)
                 // Once, when the window first appears: the setting is read
@@ -205,6 +215,12 @@ struct TurboFieldfareMacApp: App {
                     }
                 }
                 .accessibilityIdentifier(.settingsTextSize)
+                Picker("Appearance", selection: appearanceBinding) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Text(appearance.label).tag(appearance)
+                    }
+                }
+                .accessibilityIdentifier(.settingsAppearance)
                 Divider()
                 Picker("Send Message With", selection: newlineShortcutBinding) {
                     ForEach(AppNewlineShortcut.sendMessageOptions) { shortcut in
@@ -242,6 +258,10 @@ struct TurboFieldfareMacApp: App {
 
     private var textSizeBinding: Binding<AppTextSize> {
         Binding(get: { model.textSize }, set: { model.setTextSize($0) })
+    }
+
+    private var appearanceBinding: Binding<AppAppearance> {
+        Binding(get: { model.appearance }, set: { model.setAppearance($0) })
     }
 
     private var newlineShortcutBinding: Binding<AppNewlineShortcut> {
