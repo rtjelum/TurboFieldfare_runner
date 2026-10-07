@@ -2,19 +2,50 @@
 # Launch the TurboFieldfare Mac app from the release build.
 # Builds it first if the binary is missing. Refuses to start while another
 # model process is running, because only one may hold the model at a time.
+#
+#   ./runagent              build if missing, then launch
+#   ./runagent --rebuild    build the release app (incremental), then launch
+#   ./runagent --clean      remove build output, build from scratch, then launch
+#
+# Any other arguments are passed to the app.
 set -euo pipefail
 
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_directory"
 
+clean=0
+rebuild=0
+app_arguments=()
+for argument in "$@"; do
+  case "$argument" in
+    --clean) clean=1; rebuild=1 ;;
+    --rebuild) rebuild=1 ;;
+    -h|--help)
+      sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) app_arguments+=("$argument") ;;
+  esac
+done
+
+# Checked before cleaning too: removing the build output would delete the
+# binary of an app that is still running.
 if running="$(pgrep -fl 'TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm')"; then
   echo "Another model process is already running; not starting a second one:" >&2
   echo "$running" >&2
   exit 1
 fi
 
-if [[ ! -x .build/release/TurboFieldfareMac ]]; then
+if (( clean )); then
+  # Removes compiled output only; resolved package checkouts are kept, so
+  # nothing is downloaded again.
+  echo "Cleaning build output..."
+  swift package clean
+fi
+
+if (( rebuild )) || [[ ! -x .build/release/TurboFieldfareMac ]]; then
+  echo "Building release..."
   swift build -c release
 fi
 
-exec .build/release/TurboFieldfareMac "$@"
+exec .build/release/TurboFieldfareMac ${app_arguments[@]+"${app_arguments[@]}"}
