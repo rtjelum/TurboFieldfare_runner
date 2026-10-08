@@ -66,6 +66,27 @@ import Testing
         #expect(CodeBlockExtractor.blocks(inAnswers: ["none"]).blocks.isEmpty)
     }
 
+    @Test func swiftAppWithMainRunsAsLibrary() {
+        let swift = CodeRunnerLanguage.forTag("swift")
+        let app = "import SwiftUI\n\n@main\nstruct GameApp: App {\n    var body: some Scene { WindowGroup { Text(\"x\") } }\n}"
+        #expect(CodeRunner.interpreter(for: swift, code: app) == ["swift", "-Xfrontend", "-parse-as-library"])
+        #expect(CodeRunner.interpreter(for: swift, code: "print(1)") == ["swift"])
+        #expect(CodeRunner.interpreter(for: swift, code: "// @main is not here\nprint(1)") == ["swift"])
+        #expect(CodeRunner.interpreter(for: swift, code: "@mainActor func f() {}") == ["swift"])
+        #expect(CodeRunner.interpreter(for: swift, code: "  @main struct A { static func main() {} }")
+                == ["swift", "-Xfrontend", "-parse-as-library"])
+        #expect(CodeRunner.interpreter(for: .forTag("python"), code: "@main") == ["python3"])
+    }
+
+    @Test func openedFileLanguageComesFromExtensionOrShebang() {
+        #expect(CodeRunnerLanguage.tag(forFileExtension: "PY", code: "") == "python")
+        #expect(CodeRunnerLanguage.tag(forFileExtension: "mjs", code: "") == "javascript")
+        #expect(CodeRunnerLanguage.tag(forFileExtension: "", code: "#!/usr/bin/env python3\nx") == "python")
+        #expect(CodeRunnerLanguage.tag(forFileExtension: "", code: "#!/bin/sh\necho") == "sh")
+        #expect(CodeRunnerLanguage.tag(forFileExtension: "", code: "no shebang") == "")
+        #expect(CodeRunnerLanguage.tag(forFileExtension: "kt", code: "") == "kt")
+    }
+
     @Test func languageMapping() {
         #expect(CodeRunnerLanguage.forTag("py").interpreter == ["python3"])
         #expect(CodeRunnerLanguage.forTag("JavaScript").fileExtension == "js")
@@ -167,6 +188,46 @@ import Testing
         #expect(plan.packages.isEmpty)
         #expect(plan.steps.count == 1)
         #expect(plan.steps[0].arguments == [script.path])
+    }
+
+    @Test func openedFileReplacesTheListingsAndRunsInPlace() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodeRunnerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("MazeGame.swift")
+        try "@main\nstruct A { static func main() {} }\n"
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let runner = CodeRunner(pythonEnvironment: directory.appendingPathComponent("venv"))
+        runner.present(blocks: [
+            ExtractedCodeBlock(index: 0, language: "py", code: "a"),
+            ExtractedCodeBlock(index: 1, language: "py", code: "b"),
+        ])
+        try runner.open(file)
+        #expect(runner.blocks.isEmpty)
+        #expect(runner.languageTag == "swift")
+        #expect(runner.code == "@main\nstruct A { static func main() {} }")
+        #expect(try runner.runTarget() == file)
+        #expect(runner.commandDescription(for: file)
+                == "swift -Xfrontend -parse-as-library MazeGame.swift")
+    }
+
+    @Test func openRefusesFilesThatAreNotScripts() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodeRunnerTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let binary = directory.appendingPathComponent("blob.bin")
+        try Data([0xFF, 0xFE, 0x00, 0xC3]).write(to: binary)
+        let large = directory.appendingPathComponent("large.py")
+        try Data(repeating: 0x61, count: CodeRunner.openByteLimit + 1).write(to: large)
+
+        let runner = CodeRunner(pythonEnvironment: directory.appendingPathComponent("venv"))
+        runner.present(blocks: [ExtractedCodeBlock(index: 0, language: "py", code: "keep")])
+        #expect(throws: CodeRunnerError.self) { try runner.open(binary) }
+        #expect(throws: CodeRunnerError.self) { try runner.open(large) }
+        #expect(runner.code == "keep")
     }
 
     @Test func packageNamesThatPipWouldMisreadAreRefused() {

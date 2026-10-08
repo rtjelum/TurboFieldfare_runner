@@ -64,6 +64,47 @@ public struct CodeRunnerLanguage: Equatable, Sendable {
         }
     }
 
+    /// The language tag for a file opened from disk. A file without an
+    /// extension is read from its `#!` line, as the shell would.
+    public static func tag(forFileExtension fileExtension: String, code: String) -> String {
+        switch fileExtension.lowercased() {
+        case "py", "pyw": return "python"
+        case "sh", "bash": return "bash"
+        case "zsh": return "zsh"
+        case "js", "mjs", "cjs": return "javascript"
+        case "ts", "mts": return "typescript"
+        case "rb": return "ruby"
+        case "pl", "pm": return "perl"
+        case "php": return "php"
+        case "lua": return "lua"
+        case "swift": return "swift"
+        case "applescript": return "applescript"
+        case "go": return "go"
+        case "html", "htm": return "html"
+        case "css": return "css"
+        case "json": return "json"
+        case "yaml", "yml": return "yaml"
+        case "md", "markdown": return "markdown"
+        case "c", "h": return "c"
+        case "cpp", "cc", "cxx", "hpp": return "cpp"
+        case "rs": return "rust"
+        case "java": return "java"
+        case "sql": return "sql"
+        case "":
+            guard code.hasPrefix("#!") else { return "" }
+            let shebang = code.prefix { $0 != "\n" }
+            for (needle, tag) in [("python", "python"), ("node", "javascript"),
+                                  ("ruby", "ruby"), ("perl", "perl"), ("zsh", "zsh"),
+                                  ("bash", "bash"), ("/sh", "sh")]
+            where shebang.contains(needle) {
+                return tag
+            }
+            return ""
+        default:
+            return fileExtension.lowercased()
+        }
+    }
+
     /// A file name the save panel and the scratch run start from.
     public func suggestedFileName(index: Int) -> String {
         "snippet-\(index + 1).\(fileExtension)"

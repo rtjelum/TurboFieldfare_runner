@@ -86,6 +86,37 @@ public final class CodeRunner {
         savedURL = nil
     }
 
+    // MARK: - Opening
+
+    /// Largest file `open(_:)` accepts; the editor is a plain text view, and a
+    /// script is not megabytes long.
+    public static let openByteLimit = 1024 * 1024
+
+    /// Loads a script from disk in place of the chat's listings. The file
+    /// becomes the saved file, so a run uses it where it is — beside its
+    /// `requirements.txt` and any module it imports — rather than a copy.
+    public func open(_ url: URL) throws {
+        guard !isRunning else { return }
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        if let size = attributes[.size] as? Int, size > Self.openByteLimit {
+            throw CodeRunnerError.unreadable(
+                "\(url.lastPathComponent) is larger than 1 MB and is not opened as a script.")
+        }
+        let data = try Data(contentsOf: url)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CodeRunnerError.unreadable(
+                "\(url.lastPathComponent) is not UTF-8 text.")
+        }
+        blocks = []
+        selectedIndex = 0
+        code = text.hasSuffix("\n") ? String(text.dropLast()) : text
+        languageTag = CodeRunnerLanguage.tag(forFileExtension: url.pathExtension, code: text)
+        savedURL = url
+        output = []
+        phase = .idle
+        presentationID += 1
+    }
+
     // MARK: - Saving
 
     /// Writes the code with a trailing newline, as editors and interpreters
@@ -135,8 +166,35 @@ public final class CodeRunner {
 
     /// The command line a run will use, for the confirmation and the log.
     public func commandDescription(for url: URL) -> String? {
-        guard let interpreter = language.interpreter else { return nil }
+        guard let interpreter = Self.interpreter(for: language, code: code) else { return nil }
         return (interpreter + [url.lastPathComponent]).joined(separator: " ")
+    }
+
+    /// The language's interpreter, adjusted for what the listing is.
+    ///
+    /// `swift file.swift` compiles the file as a script, and a script may not
+    /// declare `@main` — so every SwiftUI or AppKit app a model writes failed
+    /// before its first line with "'main' attribute cannot be used in a module
+    /// that contains top-level code". Such a file is a library with an entry
+    /// point, which is what `-parse-as-library` says. The `swift` driver
+    /// rejects that flag ("not supported by 'swift'; did you mean to use
+    /// 'swiftc'?"), so it is passed through to the frontend.
+    nonisolated static func interpreter(for language: CodeRunnerLanguage, code: String) -> [String]? {
+        guard var interpreter = language.interpreter else { return nil }
+        if interpreter == ["swift"], declaresMainEntryPoint(code) {
+            interpreter += ["-Xfrontend", "-parse-as-library"]
+        }
+        return interpreter
+    }
+
+    /// True when a line starts with `@main`, outside a `//` comment.
+    nonisolated static func declaresMainEntryPoint(_ code: String) -> Bool {
+        code.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+            let trimmed = line.drop { $0 == " " || $0 == "\t" }
+            guard trimmed.hasPrefix("@main") else { return false }
+            let rest = trimmed.dropFirst("@main".count)
+            return rest.first.map { !($0.isLetter || $0.isNumber || $0 == "_") } ?? true
+        }
     }
 
     /// The file a run would execute: the saved file if its contents are
@@ -169,7 +227,7 @@ public final class CodeRunner {
     /// Readies a run of `url`. Python creates its environment if needed and
     /// lists the missing packages; nothing is downloaded or run here.
     public func prepare(_ url: URL) async throws -> RunPlan {
-        guard !isRunning, let interpreter = language.interpreter else {
+        guard !isRunning, let interpreter = Self.interpreter(for: language, code: code) else {
             throw CodeRunnerError.notRunnable
         }
         guard interpreter.first == "python3" else {
@@ -405,11 +463,13 @@ public final class CodeRunner {
 public enum CodeRunnerError: LocalizedError {
     case notRunnable
     case environment(String)
+    case unreadable(String)
 
     public var errorDescription: String? {
         switch self {
         case .notRunnable: "This language can be saved but not run here."
         case .environment(let message): message
+        case .unreadable(let message): message
         }
     }
 }

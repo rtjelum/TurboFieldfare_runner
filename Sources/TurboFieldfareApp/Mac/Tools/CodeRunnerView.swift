@@ -78,6 +78,11 @@ struct CodeRunnerView: View {
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
             Spacer()
+            Button("Open…", systemImage: "folder.badge.plus", action: openFile)
+                .disabled(runner.isRunning)
+                .keyboardShortcut("o", modifiers: .command)
+                .help("Open a script from disk to edit and run it where it is")
+                .accessibilityIdentifier(.runnerOpen)
             Button("Save As…", systemImage: "square.and.arrow.down", action: saveAs)
                 .disabled(runner.code.isEmpty)
                 .keyboardShortcut("s", modifiers: .command)
@@ -209,6 +214,20 @@ struct CodeRunnerView: View {
     }
 
     // MARK: - Actions
+
+    private func openFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a script to open in the Code Runner"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try runner.open(url)
+        } catch {
+            errorMessage = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
 
     private func saveAs() {
         let panel = NSSavePanel()
