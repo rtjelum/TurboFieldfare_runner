@@ -237,4 +237,70 @@ import Testing
         #expect(!PythonImportScan.isSafePackageName("../evil"))
         #expect(!PythonImportScan.isSafePackageName("https://x/y.whl"))
     }
+
+    /// A project folder takes unsaved code: written to its `chat_scripts`
+    /// under the next free number, reused when the code is unchanged, run
+    /// from the project, and in the project's own `.venv`.
+    @Test func unsavedCodeRunsInTheProjectFolderWithItsVenv() async throws {
+        let project = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodeRunnerTests-\(UUID().uuidString)")
+        let bin = project.appendingPathComponent(".venv/bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: project) }
+        // A wrapper, not a symlink: the /usr/bin/python3 shim looks itself up
+        // by the name it was called with, and there is no "python".
+        let python = bin.appendingPathComponent("python")
+        try "#!/bin/sh\nexec /usr/bin/python3 \"$@\"\n"
+            .write(to: python, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: python.path)
+        let scripts = project.appendingPathComponent("chat_scripts")
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try "old\n".write(to: scripts.appendingPathComponent("chat_7.py"),
+                          atomically: true, encoding: .utf8)
+
+        let shared = project.appendingPathComponent("shared-venv")
+        let runner = CodeRunner(pythonEnvironment: shared)
+        runner.projectFolder = project
+        runner.present(blocks: [ExtractedCodeBlock(index: 0, language: "python",
+                                                   code: "import json\nprint(1)")])
+        let target = try runner.runTarget()
+        #expect(target.lastPathComponent == "chat_8.py")
+        #expect(target.deletingLastPathComponent().standardizedFileURL.path
+                == scripts.standardizedFileURL.path)
+        #expect(try runner.runTarget() == target)
+
+        let plan = try await runner.prepare(target)
+        #expect(plan.environment?.standardizedFileURL.path
+                == project.appendingPathComponent(".venv").standardizedFileURL.path)
+        #expect(plan.workingDirectory == project)
+        #expect(plan.steps.count == 1)
+        #expect(!FileManager.default.fileExists(atPath: shared.path))
+
+        runner.code = "print(2)"
+        #expect(try runner.runTarget().lastPathComponent == "chat_9.py")
+    }
+
+    @Test func missingProjectFolderIsReportedRatherThanCreated() {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodeRunnerTests-missing-\(UUID().uuidString)")
+        let runner = CodeRunner()
+        runner.projectFolder = missing
+        runner.present(blocks: [ExtractedCodeBlock(index: 0, language: "py", code: "1")])
+        #expect(throws: CodeRunnerError.self) { try runner.runTarget() }
+        #expect(!FileManager.default.fileExists(atPath: missing.path))
+    }
+
+    @Test func projectFolderIsRememberedInTheSettingsFile() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodeRunnerTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settings = directory.appendingPathComponent("settings.json")
+        let folder = URL(fileURLWithPath: "/Users/someone/project", isDirectory: true)
+
+        CodeRunner(settingsFile: settings).projectFolder = folder
+        #expect(CodeRunner(settingsFile: settings).projectFolder == folder)
+        CodeRunner(settingsFile: settings).projectFolder = nil
+        #expect(CodeRunner(settingsFile: settings).projectFolder == nil)
+    }
 }

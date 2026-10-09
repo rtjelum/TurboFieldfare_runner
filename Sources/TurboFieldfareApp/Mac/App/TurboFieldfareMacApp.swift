@@ -94,7 +94,7 @@ struct TurboFieldfareMacApp: App {
             visionRuntimeSupported: AppModel.currentDeviceSupportsVisionRuntime,
             settingsPersistenceEnabled: true)
         _model = StoredState(initialValue: model)
-        _codeRunner = StoredState(initialValue: CodeRunner())
+        _codeRunner = StoredState(initialValue: CodeRunner(settingsFile: CodeRunner.defaultSettingsFile))
         MainActor.assumeIsolated { ForegroundAppDelegate.model = model }
     }
 

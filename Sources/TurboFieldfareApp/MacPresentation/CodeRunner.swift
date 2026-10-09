@@ -12,9 +12,15 @@ import Observation
 /// from Finder or the Dock inherits launchd's minimal `PATH` and would not find
 /// a Homebrew `node` or `python3` that works in Terminal.
 ///
-/// Python runs in a virtual environment of its own. Before a run, the
-/// script's imports are read and the ones the environment lacks are listed in
-/// the confirmation; only after it are they installed with pip.
+/// Python runs in the project's own `.venv` when the script sits in or below
+/// a folder that has one, and otherwise in a shared environment of the app's.
+/// Before a run, the script's imports are read and the ones the environment
+/// lacks are listed in the confirmation; only after it are they installed
+/// with pip.
+///
+/// Code that has not been saved runs from the project folder when one is
+/// chosen — written to its `chat_scripts` folder and run with the project as
+/// its working directory — and from a temporary folder otherwise.
 @MainActor
 @Observable
 public final class CodeRunner {
@@ -59,8 +65,47 @@ public final class CodeRunner {
     private var keptBytes = 0
     private static let outputByteCap = 4 * 1024 * 1024
 
-    public init(pythonEnvironment: URL = CodeRunner.defaultPythonEnvironment) {
+    /// Where unsaved code is written and run; `nil` uses a temporary folder.
+    /// Persisted to `settingsFile` when there is one.
+    public var projectFolder: URL? {
+        didSet { if projectFolder != oldValue { persistSettings() } }
+    }
+    private let settingsFile: URL?
+
+    /// `settingsFile` is where the project folder is remembered; without one
+    /// it lasts only as long as the runner, which is what tests want.
+    public init(pythonEnvironment: URL = CodeRunner.defaultPythonEnvironment,
+                settingsFile: URL? = nil) {
         self.pythonEnvironment = pythonEnvironment
+        self.settingsFile = settingsFile
+        if let settingsFile,
+           let data = try? Data(contentsOf: settingsFile),
+           let settings = try? JSONDecoder().decode(Settings.self, from: data) {
+            projectFolder = settings.projectFolder
+                .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        }
+    }
+
+    public static var defaultSettingsFile: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TurboFieldfare/CodeRunner/settings.json")
+    }
+
+    private struct Settings: Codable {
+        var projectFolder: String?
+    }
+
+    private func persistSettings() {
+        guard let settingsFile else { return }
+        do {
+            try FileManager.default.createDirectory(
+                at: settingsFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(Settings(projectFolder: projectFolder?.path))
+                .write(to: settingsFile, options: .atomic)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "Could not save Code Runner settings: \(error.localizedDescription)\n".utf8))
+        }
     }
 
     public var language: CodeRunnerLanguage { .forTag(languageTag) }
@@ -93,8 +138,8 @@ public final class CodeRunner {
     public static let openByteLimit = 1024 * 1024
 
     /// Loads a script from disk in place of the chat's listings. The file
-    /// becomes the saved file, so a run uses it where it is — beside its
-    /// `requirements.txt` and any module it imports — rather than a copy.
+    /// becomes the saved file, so a run uses it where it is — beside any
+    /// module it imports — rather than a copy.
     public func open(_ url: URL) throws {
         guard !isRunning else { return }
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -145,11 +190,11 @@ public final class CodeRunner {
         public let steps: [Step]
         /// PyPI distributions the script imports that the environment lacks.
         public let packages: [String]
-        /// A `requirements.txt` beside the file that will be installed first.
-        public let requirements: URL?
         /// Imports that cannot be installed with pip, such as `tkinter`.
         public let unavailable: [String]
         public let environment: URL?
+        /// Where the steps run; the file's own folder when `nil`.
+        public var workingDirectory: URL? = nil
         /// The script does not parse; see `PythonImportScan.Result`.
         public var syntaxError: String? = nil
 
@@ -198,12 +243,30 @@ public final class CodeRunner {
     }
 
     /// The file a run would execute: the saved file if its contents are
-    /// still what is in the editor, otherwise a fresh scratch file.
+    /// still what is in the editor, otherwise a script in the project
+    /// folder's `chat_scripts`, or a fresh scratch file without one.
     public func runTarget() throws -> URL {
         if let savedURL,
            let onDisk = try? String(contentsOf: savedURL, encoding: .utf8),
            onDisk == code || onDisk == code + "\n" {
             return savedURL
+        }
+        if let projectFolder {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: projectFolder.path,
+                                                 isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                throw CodeRunnerError.environment(
+                    "The project folder \(projectFolder.path) is missing. "
+                    + "Choose another one, or run from a temporary folder.")
+            }
+            let directory = Self.scriptsDirectory(in: projectFolder)
+            try FileManager.default.createDirectory(at: directory,
+                                                    withIntermediateDirectories: true)
+            let url = Self.chatScriptURL(for: code, fileExtension: language.fileExtension,
+                                         in: directory)
+            try Self.write(code, to: url)
+            return url
         }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("TurboFieldfareRuns", isDirectory: true)
@@ -224,6 +287,57 @@ public final class CodeRunner {
             .appendingPathComponent("TurboFieldfare/CodeRunner/python-venv", isDirectory: true)
     }
 
+    nonisolated static func scriptsDirectory(in projectFolder: URL) -> URL {
+        projectFolder.appendingPathComponent("chat_scripts", isDirectory: true)
+    }
+
+    /// `chat_N.ext`, continuing the folder's numbering. Running the same code
+    /// again reuses its file rather than adding a copy each time.
+    nonisolated static func chatScriptURL(for code: String, fileExtension: String,
+                                          in directory: URL) -> URL {
+        let text = code.hasSuffix("\n") ? code : code + "\n"
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        var highest = 0
+        for name in names {
+            let url = directory.appendingPathComponent(name)
+            guard url.pathExtension == fileExtension, name.hasPrefix("chat_"),
+                  let number = Int(url.deletingPathExtension().lastPathComponent.dropFirst(5))
+            else { continue }
+            if (try? String(contentsOf: url, encoding: .utf8)) == text { return url }
+            highest = max(highest, number)
+        }
+        return directory.appendingPathComponent("chat_\(highest + 1).\(fileExtension)")
+    }
+
+    /// A project's own environment: a `.venv` or `venv` in the script's
+    /// folder or a folder above it, up to the home folder.
+    nonisolated static func projectPythonEnvironment(near url: URL) -> URL? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        var directory = url.deletingLastPathComponent().standardizedFileURL
+        while true {
+            for name in [".venv", "venv"] {
+                let candidate = directory.appendingPathComponent(name, isDirectory: true)
+                if FileManager.default.isExecutableFile(
+                    atPath: candidate.appendingPathComponent("bin/python").path) {
+                    return candidate
+                }
+            }
+            if directory.path == home || directory.path == "/" { return nil }
+            directory = directory.deletingLastPathComponent()
+        }
+    }
+
+    /// Code written to the project's `chat_scripts` runs with the project as
+    /// its working directory, so it finds the project's files as if it were
+    /// run from there; anything else runs beside itself.
+    private func workingDirectory(for url: URL) -> URL? {
+        guard let projectFolder,
+              url.deletingLastPathComponent().standardizedFileURL.path
+                == Self.scriptsDirectory(in: projectFolder).standardizedFileURL.path
+        else { return nil }
+        return projectFolder
+    }
+
     /// Readies a run of `url`. Python creates its environment if needed and
     /// lists the missing packages; nothing is downloaded or run here.
     public func prepare(_ url: URL) async throws -> RunPlan {
@@ -235,11 +349,12 @@ public final class CodeRunner {
                 file: url,
                 steps: [Self.loginShellStep(interpreter + [url.path],
                                             description: commandDescription(for: url) ?? "")],
-                packages: [], requirements: nil, unavailable: [], environment: nil)
+                packages: [], unavailable: [], environment: nil,
+                workingDirectory: workingDirectory(for: url))
         }
         phase = .preparing
         defer { if phase == .preparing { phase = .idle } }
-        let environment = pythonEnvironment
+        let environment = Self.projectPythonEnvironment(near: url) ?? pythonEnvironment
         let python = environment.appendingPathComponent("bin/python")
         if !FileManager.default.isExecutableFile(atPath: python.path) {
             try FileManager.default.createDirectory(
@@ -262,27 +377,20 @@ public final class CodeRunner {
             throw CodeRunnerError.environment("Could not read the script's imports: \(scan.output)")
         }
         let packages = result.install.filter(PythonImportScan.isSafePackageName)
-        let requirementsFile = url.deletingLastPathComponent()
-            .appendingPathComponent("requirements.txt")
-        let requirements = FileManager.default.fileExists(atPath: requirementsFile.path)
-            && !url.path.hasPrefix(FileManager.default.temporaryDirectory.path)
-            ? requirementsFile : nil
 
         var steps: [Step] = []
-        if !packages.isEmpty || requirements != nil {
-            var arguments = ["-m", "pip", "install", "--disable-pip-version-check"]
-            if let requirements { arguments += ["-r", requirements.path] }
-            arguments += packages
+        if !packages.isEmpty {
             steps.append(Step(
-                executable: python, arguments: arguments,
-                description: "pip install " + ((requirements != nil ? ["-r requirements.txt"] : [])
-                    + packages).joined(separator: " ")))
+                executable: python,
+                arguments: ["-m", "pip", "install", "--disable-pip-version-check"] + packages,
+                description: "pip install " + packages.joined(separator: " ")))
         }
         steps.append(Step(executable: python, arguments: [url.path],
                           description: "python \(url.lastPathComponent)"))
         return RunPlan(file: url, steps: steps, packages: packages,
-                       requirements: requirements, unavailable: result.unavailable,
-                       environment: environment, syntaxError: result.syntaxError)
+                       unavailable: result.unavailable,
+                       environment: environment, workingDirectory: workingDirectory(for: url),
+                       syntaxError: result.syntaxError)
     }
 
     public func run(_ plan: RunPlan) {
@@ -290,7 +398,8 @@ public final class CodeRunner {
         output = []
         partial = [:]
         keptBytes = 0
-        append(.system, "$ cd \(plan.file.deletingLastPathComponent().path)\n")
+        let directory = plan.workingDirectory ?? plan.file.deletingLastPathComponent()
+        append(.system, "$ cd \(directory.path)\n")
         if let environment = plan.environment {
             append(.system, "# Python environment: \(environment.path)\n")
         }
@@ -298,7 +407,7 @@ public final class CodeRunner {
             append(.system, "# \(name) cannot be installed with pip; the script may fail to import it.\n")
         }
         remainingSteps = plan.steps
-        directory = plan.file.deletingLastPathComponent()
+        self.directory = directory
         startNextStep()
     }
 

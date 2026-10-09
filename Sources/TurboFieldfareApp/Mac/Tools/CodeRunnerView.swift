@@ -13,6 +13,9 @@ struct CodeRunnerView: View {
         VStack(spacing: 0) {
             header
                 .padding(12)
+            folderBar
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
             Divider()
             VSplitView {
                 editor
@@ -30,7 +33,7 @@ struct CodeRunnerView: View {
                                  set: { if !$0 { pendingRun = nil } }),
             titleVisibility: .visible
         ) {
-            Button(pendingRun.map { $0.packages.isEmpty && $0.requirements == nil } ?? true
+            Button(pendingRun.map { $0.packages.isEmpty } ?? true
                    ? "Run" : "Install and Run") {
                 if let plan = pendingRun { runner.run(plan) }
                 pendingRun = nil
@@ -116,6 +119,36 @@ struct CodeRunnerView: View {
                     .accessibilityIdentifier(.runnerRun)
             }
         }
+    }
+
+    /// Where code that has not been saved runs, and the way to change it.
+    private var folderBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder")
+            if let folder = runner.projectFolder {
+                Text("Unsaved code runs in \(Self.abbreviated(folder))/chat_scripts")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help("Written to \(folder.path)/chat_scripts and run from \(folder.path), "
+                        + "with the folder's .venv when it has one")
+            } else {
+                Text("Unsaved code runs in a temporary folder")
+            }
+            Spacer()
+            Button("Choose Folder…", action: chooseProjectFolder)
+                .accessibilityIdentifier(.runnerProjectFolder)
+            if runner.projectFolder != nil {
+                Button("Use Temporary Folder") { runner.projectFolder = nil }
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .controlSize(.small)
+        .disabled(runner.isRunning)
+    }
+
+    private static func abbreviated(_ url: URL) -> String {
+        (url.path as NSString).abbreviatingWithTildeInPath
     }
 
     // MARK: - Editor and output
@@ -229,6 +262,19 @@ struct CodeRunnerView: View {
         }
     }
 
+    private func chooseProjectFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = runner.projectFolder
+        panel.prompt = "Choose"
+        panel.message = "Choose the project folder unsaved code runs in"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        runner.projectFolder = url
+    }
+
     private func saveAs() {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = runner.savedURL?.lastPathComponent
@@ -260,12 +306,8 @@ struct CodeRunnerView: View {
                 + "so it will stop before doing anything and its packages cannot be "
                 + "checked. Cancel to fix it in the editor.")
         }
-        if !plan.packages.isEmpty || plan.requirements != nil {
-            var what = plan.packages.joined(separator: ", ")
-            if plan.requirements != nil {
-                what = what.isEmpty ? "requirements.txt" : "requirements.txt and " + what
-            }
-            parts.append("First installs \(what) from PyPI into "
+        if !plan.packages.isEmpty {
+            parts.append("First installs \(plan.packages.joined(separator: ", ")) from PyPI into "
                 + "\(plan.environment?.path ?? "the Python environment"). "
                 + "Package names come from the generated code; check they are the ones you expect.")
         }

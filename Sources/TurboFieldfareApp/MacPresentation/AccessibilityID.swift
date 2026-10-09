@@ -62,6 +62,7 @@ public enum AccessibilityID: String, CaseIterable, Sendable {
     case runnerLanguage = "runner.language"
     case runnerCode = "runner.code"
     case runnerOpen = "runner.open"
+    case runnerProjectFolder = "runner.projectFolder"
     case runnerSave = "runner.save"
     case runnerRun = "runner.run"
     case runnerConfirmRun = "runner.confirmRun"
