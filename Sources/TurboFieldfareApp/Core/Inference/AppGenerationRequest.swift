@@ -31,6 +31,13 @@ public struct AppGenerationRequest: Equatable, Sendable {
     /// only the service is entitled to make it.
     public var conversationEpoch: UUID?
     public var turnIndex: Int?
+    /// Whether the model may search the web while answering this turn.
+    ///
+    /// A conversation declares the tool in its opening, so this opens a new
+    /// conversation with the declaration and, in one that already has it,
+    /// decides whether a search the model asks for is actually made. It never
+    /// adds the tool to a conversation that started without it.
+    public var webSearchEnabled: Bool
 
     public init(modelDirectory: URL,
                 prompt: String,
@@ -45,7 +52,9 @@ public struct AppGenerationRequest: Equatable, Sendable {
                 continuesConversation: Bool = false,
                 conversationTokens: Int = 0,
                 conversationEpoch: UUID? = nil,
-                turnIndex: Int? = nil) {
+                turnIndex: Int? = nil,
+                webSearchEnabled: Bool = false) {
+        self.webSearchEnabled = webSearchEnabled
         self.continuesConversation = continuesConversation
         self.conversationTokens = conversationTokens
         self.conversationEpoch = conversationEpoch

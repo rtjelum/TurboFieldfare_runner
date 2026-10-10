@@ -28,6 +28,9 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var visionResidencyPolicy: VisionResidencyPolicy = .onDemand
     var rdadvisePolicy: AppRDAdvicePolicy = .off
     var loadModelOnLaunch: Bool = false
+    /// Whether new chats declare the web search tool. On by default; with it
+    /// on, what the model decides to look up leaves this Mac.
+    var webSearchEnabled: Bool = true
 
     private enum CodingKeys: String, CodingKey {
         case version
@@ -48,6 +51,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case visionResidencyPolicy
         case rdadvisePolicy
         case loadModelOnLaunch
+        case webSearchEnabled
     }
 
     init(version: Int = currentVersion,
@@ -67,7 +71,8 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          inspectorVisible: Bool = true,
          visionResidencyPolicy: VisionResidencyPolicy = .onDemand,
          rdadvisePolicy: AppRDAdvicePolicy = .off,
-         loadModelOnLaunch: Bool = false) {
+         loadModelOnLaunch: Bool = false,
+         webSearchEnabled: Bool = true) {
         self.version = version
         self.contextTokens = contextTokens
         self.expertCacheSlots = expertCacheSlots
@@ -86,6 +91,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.visionResidencyPolicy = visionResidencyPolicy
         self.rdadvisePolicy = rdadvisePolicy
         self.loadModelOnLaunch = loadModelOnLaunch
+        self.webSearchEnabled = webSearchEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -145,6 +151,9 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         loadModelOnLaunch = try container.decodeIfPresent(
             Bool.self,
             forKey: .loadModelOnLaunch) ?? false
+        webSearchEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .webSearchEnabled) ?? true
     }
 
     func isValid() -> Bool {

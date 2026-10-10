@@ -73,6 +73,10 @@ replays its recorded tokens and replaces it. See
 [Conversation history](README.md#conversation-history) for an overview.
 The HUD shows generation rate, context use, decode-service memory, and,
 on hover, cached-token reuse; Last run also shows time to first token and I/O.
+**Tools > Web Search** (on by default) declares a `web_search` tool in new
+chats and runs the model's searches against DuckDuckGo; see
+[Runtime controls](docs/RUNTIME_CONTROLS.md#web-search). Tests stub the search
+provider; do not add tests that reach the network.
 Use **New Chat** to clear the transcript, KV lineage, gauge, and retained
 images. Reloading or unloading keeps the transcript but marks it outside the
 new model context. Build the app with its sibling

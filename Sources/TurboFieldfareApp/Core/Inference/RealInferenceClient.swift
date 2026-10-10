@@ -67,9 +67,10 @@ public final class RealInferenceClient: AppModelLifecycleClient, @unchecked Send
     private let memorySampler: AppMemorySampler
     private let generationTasks = GenerationTaskRegistry()
 
-    public init(memorySampler: AppMemorySampler = AppMemorySampler()) {
+    public init(memorySampler: AppMemorySampler = AppMemorySampler(),
+                webSearch: any WebSearchProviding = DuckDuckGoWebSearch()) {
         self.memorySampler = memorySampler
-        self.session = RealInferenceSession()
+        self.session = RealInferenceSession(webSearch: webSearch)
     }
 
     public func ensureLoaded(modelDirectory: URL,
@@ -264,6 +265,11 @@ actor RealInferenceSession {
     /// The open conversation, when the app is in chat mode. Nil for the
     /// one-shot path, and dropped by any load, unload, or explicit reset.
     private var conversation: MultimodalConversation?
+    private let webSearch: any WebSearchProviding
+
+    init(webSearch: any WebSearchProviding) {
+        self.webSearch = webSearch
+    }
     /// Bytes of image tower held mapped right now, published outside the actor
     /// so a reader does not have to await it mid-decode.
     nonisolated let towerBytes = Mutex<UInt64?>(nil)
@@ -629,10 +635,10 @@ actor RealInferenceSession {
     /// What both turn paths report back, so the terminal diagnostics do not
     /// have to know which one ran.
     struct TurnOutcome {
-        let reason: StopReason
-        let prefillSeconds: Double
-        let decodeSeconds: Double
-        let newTokens: Int
+        var reason: StopReason
+        var prefillSeconds: Double
+        var decodeSeconds: Double
+        var newTokens: Int
         /// Nil on the single-prompt path: nothing was retained to reuse.
         var cachedTokens: Int?
         var computedPrefillTokens: Int?
@@ -712,23 +718,25 @@ actor RealInferenceSession {
         progress.prefillStart = Date()
         defer { publishTowerBytes() }
         do {
+            let webTool = try await webToolTurn(for: conversation, request: request)
+            let stream = webTool.map { _ in
+                ToolCallStream(tokenizer: conversation.tokenizer, report: report)
+            }
+            let config = Self.generationConfig(
+                for: request, maxNewTokens: request.maxNewTokens)
+            let checkpoint = await conversation.checkpoint()
             // `maxNewTokens` is clamped inside the conversation against what the
             // KV has room for, so it is passed through unmodified here.
             let turn = try await conversation.send(
                 parts: parts, images: imageURLs,
-                config: Self.generationConfig(
-                    for: request, maxNewTokens: request.maxNewTokens),
+                openingPreamble: webTool?.openingPreamble ?? [],
+                config: config,
                 prefillConfig: prefillConfig,
                 checkCancellation: { try Task.checkCancellation() },
                 shouldStop: stopFlagReader(),
-                onProgress: report)
+                onProgress: stream?.forward ?? report)
             progress.promptTokenCount = turn.promptTokens
-            // The conversation's own count. `promptTokens + completionTokens`
-            // is one too many whenever a run stops on max tokens or is
-            // cancelled: that final token is held outside the KV for the next
-            // turn to replay.
-            conversationTokens.withLock { $0 = turn.kvTokens }
-            return TurnOutcome(
+            var outcome = TurnOutcome(
                 reason: turn.reason, prefillSeconds: turn.prefillSeconds,
                 decodeSeconds: turn.decodeSeconds, newTokens: turn.completionTokens,
                 cachedTokens: turn.cachedTokens,
@@ -738,6 +746,34 @@ actor RealInferenceSession {
                 generatedTokenIDs: turn.generatedTokenIDs,
                 boundaryTokenIDs: turn.uncommittedBoundaryTokenIDs,
                 boundaryNeedsReplay: turn.boundaryNeedsReplay)
+            if let stream, turn.reason == .toolCalls {
+                do {
+                    try await answerToolCalls(
+                        conversation: conversation, stream: stream,
+                        searchAllowed: request.webSearchEnabled,
+                        config: config, prefillConfig: prefillConfig,
+                        progress: progress, report: report, outcome: &outcome)
+                } catch {
+                    // The first run is already in the KV, and the caller is
+                    // about to hand this whole message back as never sent.
+                    // Take it out, or the next turn resumes on a tool call
+                    // the transcript does not show.
+                    do {
+                        try await conversation.rewind(to: checkpoint)
+                    } catch let rewindError {
+                        throw AppInferenceError.conversationLineageLost("\(rewindError)")
+                    }
+                    throw error
+                }
+            }
+            // The conversation's own count. `promptTokens + completionTokens`
+            // is one too many whenever a run stops on max tokens or is
+            // cancelled: that final token is held outside the KV for the next
+            // turn to replay.
+            conversationTokens.withLock { $0 = outcome.conversationTokens ?? turn.kvTokens }
+            return outcome
+        } catch let error as GFTokenizerError {
+            throw AppInferenceError.invalidRequest("Web search is unavailable: \(error)")
         } catch let error as MultimodalConversationError {
             // Mapped rather than flattened: a lineage that broke can only be
             // cleared, an exhausted context is the user's to act on, and an
@@ -759,6 +795,183 @@ actor RealInferenceSession {
             case .closed, .busy, .emptyTurn, .lineageNotEmpty:
                 throw AppInferenceError.unknown("\(error)")
             }
+        }
+    }
+
+    // MARK: - Web search tool
+
+    struct WebToolTurn {
+        /// Non-empty only for the turn that opens the conversation.
+        let openingPreamble: [Int32]
+    }
+
+    /// Whether this turn runs with the web tool, and what it has to prefill
+    /// first. Nil for a conversation that was opened without the declaration:
+    /// the KV cannot be rewritten, so switching the setting on takes effect in
+    /// the next new chat.
+    private func webToolTurn(
+        for conversation: MultimodalConversation,
+        request: AppGenerationRequest
+    ) async throws -> WebToolTurn? {
+        let tokenizer = conversation.tokenizer
+        if await conversation.kvTokenCount == 0 {
+            guard request.webSearchEnabled else { return nil }
+            let preamble = try tokenizer.encodeToolPreamble(
+                system: WebSearchTool.systemPrompt(), tools: [WebSearchTool.definition])
+            return WebToolTurn(openingPreamble: preamble)
+        }
+        // Asked of the conversation's own tokens every turn rather than
+        // remembered: it may have been restored from history, and the KV is
+        // the only record that cannot disagree with itself.
+        let declaration = try tokenizer.encodeToolDeclarations(
+            tools: [WebSearchTool.definition])
+        let declared = await conversation.kvOpening(
+            contains: declaration, within: declaration.count + 512)
+        return declared ? WebToolTurn(openingPreamble: []) : nil
+    }
+
+    /// Runs the searches the model asked for and lets it continue its turn on
+    /// the results, until it answers or runs out of searches.
+    ///
+    /// All of it is one turn to the app and to the service's gate: the calls,
+    /// the response blocks and the final answer are appended to `outcome` as
+    /// the assistant's tokens, in the order the KV holds them.
+    private func answerToolCalls(
+        conversation: MultimodalConversation,
+        stream: ToolCallStream,
+        searchAllowed: Bool,
+        config: GenerationConfig,
+        prefillConfig: PrefillRuntimeConfig,
+        progress: ProgressState,
+        report: @escaping @Sendable (RawDecodeProgress) -> Void,
+        outcome: inout TurnOutcome
+    ) async throws {
+        let tokenizer = conversation.tokenizer
+        let tools = [WebSearchTool.definition]
+        var searchesLeft = WebSearchTool.maximumSearchesPerTurn
+        // One round past the limit, so the refusal reaches the model and it
+        // can answer; a model that calls again after that is simply stopped.
+        for _ in 0...WebSearchTool.maximumSearchesPerTurn {
+            guard outcome.reason == .toolCalls else { return }
+            let calls = stream.takeCalls()
+            guard !calls.isEmpty else {
+                report(.tail(WebSearchTool.transcriptFailure(
+                    "the model's request could not be read")))
+                return
+            }
+            var searches: [(query: String, results: [WebSearchResult])?] = []
+            var failures: [String?] = []
+            for call in calls {
+                try Task.checkCancellation()
+                let failure: String
+                if let query = WebSearchTool.query(of: call) {
+                    if !searchAllowed {
+                        failure = "web search is turned off"
+                    } else if searchesLeft == 0 {
+                        failure = "the search limit for this message was reached"
+                    } else {
+                        searchesLeft -= 1
+                        switch try await search(query) {
+                        case .success(let results):
+                            report(.tail(WebSearchTool.transcriptSources(results)))
+                            searches.append((query, results))
+                            failures.append(nil)
+                            continue
+                        case .failure(let reason):
+                            failure = reason
+                        }
+                    }
+                } else {
+                    failure = "the search had no query"
+                }
+                report(.tail(WebSearchTool.transcriptFailure(failure)))
+                searches.append(nil)
+                failures.append(failure)
+            }
+
+            let kvTokens = outcome.conversationTokens ?? 0
+            let room = conversation.maxContext - kvTokens
+                - ConversationGenerationReserve.tokens
+            let historical = calls.map {
+                GFTokenizer.HistoricalToolCall(
+                    id: $0.id, name: $0.name, arguments: $0.arguments)
+            }
+            // Fewer results rather than no turn: drop from the bottom of each
+            // list until the response blocks fit what the context has left.
+            var responseTokens: [Int32]?
+            for limit in stride(from: WebSearchTool.maximumResults, through: 0, by: -1) {
+                let texts = zip(searches, failures).map { search, failure in
+                    search.map {
+                        WebSearchTool.response(
+                            query: $0.query, results: $0.results, limit: limit)
+                    } ?? WebSearchTool.failureResponse(failure ?? "the search failed")
+                }
+                let tokens = try tokenizer.encodeToolResponses(
+                    calls: historical, results: texts, tools: tools)
+                if tokens.count <= room {
+                    responseTokens = tokens
+                    break
+                }
+            }
+            guard let responseTokens else {
+                throw MultimodalConversationError.contextExhausted(
+                    prompt: kvTokens, reserve: ConversationGenerationReserve.tokens,
+                    maxContext: conversation.maxContext)
+            }
+
+            stream.beginRound(tokensSoFar: progress.generated)
+            try await conversation.appendContinuation(tokenIDs: responseTokens)
+            let turn = try await conversation.generate(
+                config: config, prefillConfig: prefillConfig,
+                checkCancellation: { try Task.checkCancellation() },
+                shouldStop: stopFlagReader(),
+                onProgress: stream.forward)
+            outcome.reason = turn.reason
+            outcome.prefillSeconds += turn.prefillSeconds
+            outcome.decodeSeconds += turn.decodeSeconds
+            outcome.newTokens += turn.completionTokens
+            outcome.computedPrefillTokens =
+                (outcome.computedPrefillTokens ?? 0) + turn.computedPrefillTokens
+            outcome.conversationTokens = turn.kvTokens
+            outcome.generatedTokenIDs = (outcome.generatedTokenIDs ?? [])
+                + turn.promptTokenIDs + turn.generatedTokenIDs
+            outcome.boundaryTokenIDs = turn.uncommittedBoundaryTokenIDs
+            outcome.boundaryNeedsReplay = turn.boundaryNeedsReplay
+        }
+    }
+
+    private enum SearchOutcome: Sendable {
+        case success([WebSearchResult])
+        case failure(String)
+    }
+
+    /// One search, abandoned as soon as the user presses Stop. A failed search
+    /// is an answer the model is given, not an error: only cancellation of the
+    /// whole turn throws.
+    private func search(_ query: String) async throws -> SearchOutcome {
+        let webSearch = self.webSearch
+        let stopped = stopFlagReader()
+        return try await withThrowingTaskGroup(of: SearchOutcome.self) { group in
+            group.addTask {
+                do {
+                    return .success(try await webSearch.search(
+                        query: query, maxResults: WebSearchTool.maximumResults))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as WebSearchError {
+                    return .failure(error.description)
+                } catch {
+                    return .failure("the search failed: \(error.localizedDescription)")
+                }
+            }
+            group.addTask {
+                while !stopped() {
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                return .failure("the search was stopped")
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? .failure("the search did not run")
         }
     }
 
@@ -1014,6 +1227,86 @@ private final class ProgressState: @unchecked Sendable {
         guard let prefillStart else { return nil }
         let end = decodeStart ?? Date()
         return max(end.timeIntervalSince(prefillStart), 0)
+    }
+}
+
+/// Sits between the decode loop and the event stream while the web tool is
+/// declared: a tool call's raw markup is withheld and parsed, and one line
+/// naming the search takes its place in the transcript.
+///
+/// Single-threaded for the same reason `ProgressState` is.
+private final class ToolCallStream: @unchecked Sendable {
+    private let tokenizer: GFTokenizer
+    private let report: @Sendable (RawDecodeProgress) -> Void
+    private var payload: [Int32]?
+    private var calls: [ParsedToolCall] = []
+    private var callsSeen = 0
+    /// Tokens earlier runs of this turn reported, so indices keep counting up.
+    private var indexBase = 0
+    private var isFirstRound = true
+
+    init(tokenizer: GFTokenizer, report: @escaping @Sendable (RawDecodeProgress) -> Void) {
+        self.tokenizer = tokenizer
+        self.report = report
+    }
+
+    var forward: @Sendable (RawDecodeProgress) -> Void {
+        { [self] event in consume(event) }
+    }
+
+    func beginRound(tokensSoFar: Int) {
+        indexBase = tokensSoFar
+        isFirstRound = false
+        payload = nil
+    }
+
+    /// The calls parsed since the last take. Empty after a `.toolCalls` stop
+    /// means the model's markup did not parse.
+    func takeCalls() -> [ParsedToolCall] {
+        defer { calls = [] }
+        return calls
+    }
+
+    private func consume(_ event: RawDecodeProgress) {
+        switch event {
+        case .prefill:
+            // A later run's prefill is the search results going in. Reporting
+            // it would restart the decode clock the first run started.
+            if isFirstRound { report(event) }
+        case .tail(let text):
+            report(.tail(payload == nil ? text : ""))
+        case .token(let index, let id, let delta):
+            let visible: String
+            if id == tokenizer.toolCallStartID {
+                // Text the detokenizer held back from before the marker.
+                payload = []
+                visible = delta
+            } else if id == tokenizer.toolCallEndID, let tokens = payload {
+                payload = nil
+                visible = heading(forCall: tokens)
+            } else if payload != nil {
+                if (payload?.count ?? 0) * MemoryLayout<Int32>.size
+                    < GemmaToolCallParser.maximumBytes {
+                    payload?.append(id)
+                }
+                visible = ""
+            } else {
+                visible = delta
+            }
+            report(.token(index: indexBase + index, id: id, delta: visible))
+        }
+    }
+
+    private func heading(forCall tokens: [Int32]) -> String {
+        let text = tokenizer.decode(tokens, skipSpecialTokens: false)
+        callsSeen += 1
+        guard let call = try? GemmaToolCallParser().parse(
+            text, allowedTools: [WebSearchTool.name], id: "call_\(callsSeen)") else {
+            return ""
+        }
+        calls.append(call)
+        return WebSearchTool.transcriptHeading(
+            query: WebSearchTool.query(of: call) ?? "(no query)")
     }
 }
 

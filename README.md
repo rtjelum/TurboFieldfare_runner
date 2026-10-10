@@ -196,6 +196,18 @@ and defaults.
 Use **Settings → Text Size** to enlarge conversation and message-editor text
 from 100% to 200%. Changes apply immediately and are remembered across launches.
 
+#### Web search
+
+**Tools > Web Search** in the right pane lets the model look things up. It is
+on by default. With it on, a new chat tells the model it has a
+`web_search` tool; when the model uses it, the app queries DuckDuckGo, shows
+the search and its sources in the reply, and the model answers from the
+results. The search queries the model writes leave your Mac; nothing else does.
+
+A chat keeps the tools it was opened with, so switching it on takes effect from
+the next **New Chat**. Switching it off stops searches immediately in every chat.
+See [Runtime controls](docs/RUNTIME_CONTROLS.md#web-search) for limits.
+
 #### Conversation history
 
 The app saves chats locally so you can browse and continue them from the

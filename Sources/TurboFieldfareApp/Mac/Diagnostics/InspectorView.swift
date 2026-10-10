@@ -18,6 +18,7 @@ struct InspectorView: View {
             }
             memorySection
             generationSection
+            toolsSection
             runtimeSection
             RunnerDiagnosticsSection(diagnostics: model.diagnostics)
         }
@@ -383,6 +384,19 @@ struct InspectorView: View {
         }
         .disabled(model.isRunning || model.loadState.isLoading
             || model.isVisionFilesystemMutationInProgress)
+    }
+
+    private var toolsSection: some View {
+        Section("Tools") {
+            Toggle("Web Search", isOn: Binding(
+                get: { model.webSearchEnabled },
+                set: { model.setWebSearchEnabled($0) }))
+                .accessibilityIdentifier(.inspectorWebSearch)
+            Text("Lets the model look things up on DuckDuckGo. Its search queries leave this Mac. Applies from the next new chat.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .disabled(model.isRunning)
     }
 
     private var runtimeSection: some View {

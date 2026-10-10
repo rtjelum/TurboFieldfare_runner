@@ -322,7 +322,8 @@ enum DecodeServiceError: Error, CustomStringConvertible {
                         repetitionPenalty: request.repetitionPenalty,
                         runtimeOptions: options,
                         continuesConversation: continues,
-                        conversationTokens: continues ? carried : 0)
+                        conversationTokens: continues ? carried : 0,
+                        webSearchEnabled: request.webSearchEnabled ?? false)
                     for try await event in client.generate(generation) { outbox.publish(event) }
                     // Reached only when the stream completed. A turn that threw
                     // was rewound by the conversation (or broke its lineage), so

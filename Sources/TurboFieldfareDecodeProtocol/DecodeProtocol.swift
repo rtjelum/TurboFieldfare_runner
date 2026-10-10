@@ -94,6 +94,9 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     /// committed, so a dropped or duplicated turn is a refusal rather than a
     /// silently reordered conversation.
     public var turnIndex: Int?
+    /// Whether the service may run a web search the model asks for. Optional
+    /// so a request from a build that predates the tool decodes as "no".
+    public var webSearchEnabled: Bool?
 
     public init(prompt: String,
                 imageAttachments: [DecodeImageAttachment]? = nil,
@@ -103,9 +106,11 @@ public struct DecodeGenerationRequest: Codable, Sendable {
                 runtimeOptions: DecodeRuntimeOptions = DecodeRuntimeOptions(),
                 generationID: UUID = UUID(),
                 conversationEpoch: UUID? = nil,
-                turnIndex: Int? = nil) {
+                turnIndex: Int? = nil,
+                webSearchEnabled: Bool? = nil) {
         self.conversationEpoch = conversationEpoch
         self.turnIndex = turnIndex
+        self.webSearchEnabled = webSearchEnabled
         self.prompt = prompt
         self.imageAttachments = imageAttachments
         self.maxNewTokens = maxNewTokens

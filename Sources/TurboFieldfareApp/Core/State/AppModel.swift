@@ -88,6 +88,11 @@ public final class AppModel {
     /// Whether launching the app should load the model straight away. Off by
     /// default, because loading takes minutes and holds gigabytes.
     public private(set) var loadModelOnLaunch: Bool = false
+    /// Whether new chats give the model a web search tool. On by default. A
+    /// chat keeps the tool it was opened with, so switching this on reaches
+    /// the model from the next new chat; switching it off stops searches at
+    /// once, in every chat.
+    public private(set) var webSearchEnabled: Bool = true
     public var diagnostics: AppDiagnostics?
     public var error: AppInferenceError?
     public var installState: AppModelInstallState = .idle
@@ -270,6 +275,7 @@ public final class AppModel {
         self.isSidebarVisible = settings.sidebarVisible
         self.isInspectorVisible = settings.inspectorVisible
         self.loadModelOnLaunch = settings.loadModelOnLaunch
+        self.webSearchEnabled = settings.webSearchEnabled
         self.installationStatus = AppModelInstallationProbe.status(at: directory)
         self.visionInstallationStatus = AppVisionPackInstallationProbe.status(at: directory)
         self.client = client
@@ -1002,6 +1008,12 @@ public final class AppModel {
         !isTurnInFlight && !requiresModelInstallation
     }
 
+
+    public func setWebSearchEnabled(_ enabled: Bool) {
+        guard webSearchEnabled != enabled else { return }
+        webSearchEnabled = enabled
+        persistSettings()
+    }
 
     public func setLoadModelOnLaunch(_ enabled: Bool) {
         guard loadModelOnLaunch != enabled else { return }
@@ -2073,6 +2085,7 @@ public final class AppModel {
         isSidebarVisible = settings.sidebarVisible
         isInspectorVisible = settings.inspectorVisible
         loadModelOnLaunch = settings.loadModelOnLaunch
+        webSearchEnabled = settings.webSearchEnabled
     }
 
     func persistSettings() {
@@ -2094,7 +2107,8 @@ public final class AppModel {
             inspectorVisible: isInspectorVisible,
             visionResidencyPolicy: runtimeOptions.visionResidencyPolicy,
             rdadvisePolicy: runtimeOptions.rdadvisePolicy,
-            loadModelOnLaunch: loadModelOnLaunch)
+            loadModelOnLaunch: loadModelOnLaunch,
+            webSearchEnabled: webSearchEnabled)
         let modelDirectory = URL(fileURLWithPath: modelPathText, isDirectory: true)
         do {
             try MacAppSettingsFileStore.save(settings, forModelDirectory: modelDirectory)
@@ -2731,7 +2745,8 @@ public final class AppModel {
             // the service's own exact state, while every image fails closed.
             conversationTokens: conversation.kvTokens ?? effective.maxContextTokens,
             conversationEpoch: ticket?.epoch,
-            turnIndex: ticket?.index)
+            turnIndex: ticket?.index,
+            webSearchEnabled: webSearchEnabled)
         try request.validate(requireModelDirectory: true)
         return request
     }

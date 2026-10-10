@@ -282,17 +282,20 @@ public struct MultimodalTurnResult: Sendable {
 public actor MultimodalConversation {
     private let model: Model
     private let context: MetalContext
-    private let tokenizer: GFTokenizer
+    public nonisolated let tokenizer: GFTokenizer
     private let runner: RealForwardRunner
     private let scratch: RawCompletionScratch
     private let visionRuntime: VisionRuntime?
     private let visionRuntimeError: Error?
     private let visionResidency: VisionResidencyPolicy
-    private let maxContext: Int
+    public nonisolated let maxContext: Int
 
     /// Exactly the tokens the KV holds, in order.
     private var kvTokenIDs: [Int32] = []
     private var pending: (parts: [MultimodalContinuationPart], images: [URL])?
+    /// Already-encoded tokens staged to continue the model's own turn, which is
+    /// how tool responses arrive. Mutually exclusive with `pending`.
+    private var pendingContinuation: [Int32]?
     private var closed = false
     /// One generation at a time. `RawCompletionScratch` documents that its
     /// buffers and sampler belong to a single run and that the guard is the
@@ -334,7 +337,7 @@ public actor MultimodalConversation {
     }
 
     public var kvTokenCount: Int { kvTokenIDs.count }
-    public var hasStagedTurn: Bool { pending != nil }
+    public var hasStagedTurn: Bool { pending != nil || pendingContinuation != nil }
     public var isClosed: Bool { closed }
     public var isUsable: Bool { !closed && !lineageBroken }
 
@@ -344,6 +347,7 @@ public actor MultimodalConversation {
     public func invalidate() async {
         closed = true
         pending = nil
+        pendingContinuation = nil
         // Wait for any run still decoding: the session resets the shared runner
         // straight after this, and resetting under a live decode either aborts
         // that turn mid-stream or lets two turns drive one runner at once.
@@ -388,6 +392,76 @@ public actor MultimodalConversation {
             throw MultimodalConversationError.emptyTurn
         }
         pending = (parts, images)
+        pendingContinuation = nil
+    }
+
+    /// Stages tokens that continue the turn the model stopped in, without a
+    /// new user turn around them. A tool loop uses this for the response
+    /// blocks that follow a `.toolCalls` stop; the tokens must begin at the
+    /// boundary the KV ends on, which only the caller's encoder can guarantee.
+    public func appendContinuation(tokenIDs: [Int32]) throws {
+        guard !closed else { throw MultimodalConversationError.closed }
+        guard !generating else { throw MultimodalConversationError.busy }
+        guard !tokenIDs.isEmpty, !kvTokenIDs.isEmpty else {
+            throw MultimodalConversationError.emptyTurn
+        }
+        pending = nil
+        pendingContinuation = tokenIDs
+    }
+
+    /// Whether `tokens` occurs within the first `limit` tokens of the KV: how
+    /// a caller asks what this lineage was opened with, for a conversation it
+    /// did not open itself.
+    public func kvOpening(contains tokens: [Int32], within limit: Int) -> Bool {
+        let opening = kvTokenIDs.prefix(limit)
+        guard !tokens.isEmpty, tokens.count <= opening.count else { return false }
+        return (0...(opening.count - tokens.count)).contains { start in
+            opening[start..<(start + tokens.count)].elementsEqual(tokens)
+        }
+    }
+
+    /// The lineage as it stands between turns, for `rewind(to:)`.
+    public struct Checkpoint: Sendable {
+        fileprivate let kvTokenCount: Int
+        fileprivate let uncommittedBoundary: [Int32]
+        fileprivate let boundaryNeedsReplay: Bool
+    }
+
+    public func checkpoint() -> Checkpoint {
+        Checkpoint(kvTokenCount: kvTokenIDs.count,
+                   uncommittedBoundary: uncommittedBoundary,
+                   boundaryNeedsReplay: boundaryNeedsReplay)
+    }
+
+    /// Puts the lineage back where `checkpoint` was taken, abandoning every
+    /// turn committed since.
+    ///
+    /// A tool loop commits several runs for one user message. If a later run
+    /// fails, the earlier ones are in the KV while the caller is about to
+    /// report the whole message as never sent, so they have to come out. The
+    /// rewind is bounded by the runner's ring slack; past it the lineage is
+    /// marked broken, exactly as a failed single-turn recovery is.
+    public func rewind(to checkpoint: Checkpoint) async throws {
+        guard !closed else { throw MultimodalConversationError.closed }
+        await waitForGeneration()
+        pending = nil
+        pendingContinuation = nil
+        guard checkpoint.kvTokenCount < kvTokenIDs.count else { return }
+        if checkpoint.kvTokenCount == 0 {
+            runner.reset()
+        } else {
+            do {
+                try runner.rewind(to: checkpoint.kvTokenCount)
+            } catch {
+                lineageBroken = true
+                throw MultimodalConversationError.lineageRecoveryFailed(
+                    reason: "Rewinding to token \(checkpoint.kvTokenCount) "
+                        + "failed with \(error).")
+            }
+        }
+        kvTokenIDs.removeLast(kvTokenIDs.count - checkpoint.kvTokenCount)
+        uncommittedBoundary = checkpoint.uncommittedBoundary
+        boundaryNeedsReplay = checkpoint.boundaryNeedsReplay
     }
 
     /// Drops a staged turn that has not been generated yet.
@@ -398,6 +472,7 @@ public actor MultimodalConversation {
     /// abandon it, at the cost of re-prefilling the conversation.
     public func clear() {
         pending = nil
+        pendingContinuation = nil
     }
 
     /// Drops the KV and starts over. The model stays loaded.
@@ -426,6 +501,7 @@ public actor MultimodalConversation {
         runner.reset()
         kvTokenIDs.removeAll(keepingCapacity: true)
         pending = nil
+        pendingContinuation = nil
         lineageBroken = false
         uncommittedBoundary = []
         boundaryNeedsReplay = false
@@ -444,6 +520,7 @@ public actor MultimodalConversation {
         runner.reset()
         kvTokenIDs.removeAll(keepingCapacity: false)
         pending = nil
+        pendingContinuation = nil
     }
 
     /// Appends one user turn and generates the reply, prefilling only the new
@@ -452,6 +529,7 @@ public actor MultimodalConversation {
     public func send(
         parts: [MultimodalContinuationPart],
         images: [URL] = [],
+        openingPreamble: [Int32] = [],
         config: GenerationConfig,
         prefillConfig: PrefillRuntimeConfig = .defaultChunked,
         checkCancellation: @Sendable () throws -> Void = {},
@@ -460,6 +538,7 @@ public actor MultimodalConversation {
     ) async throws -> MultimodalTurnResult {
         try append(parts: parts, images: images)
         return try await generate(
+            openingPreamble: openingPreamble,
             config: config, prefillConfig: prefillConfig,
             checkCancellation: checkCancellation, shouldStop: shouldStop,
             onProgress: onProgress)
@@ -477,7 +556,13 @@ public actor MultimodalConversation {
     /// a different thing from cancelling the task, which throws out of the
     /// decode loop and makes this rewind the whole turn. A Stop button wants
     /// the first; a teardown wants the second.
+    /// `openingPreamble` is placed ahead of the turn only when the KV is empty:
+    /// a system turn (see `GFTokenizer.encodeToolPreamble`) that opens the
+    /// conversation in place of the first user turn's own `<bos>`. It is
+    /// recorded as part of that turn's prompt, so a replayed lineage carries
+    /// it without knowing what it is.
     public func generate(
+        openingPreamble: [Int32] = [],
         config: GenerationConfig,
         prefillConfig: PrefillRuntimeConfig = .defaultChunked,
         checkCancellation: @Sendable () throws -> Void = {},
@@ -487,13 +572,14 @@ public actor MultimodalConversation {
         guard !closed else { throw MultimodalConversationError.closed }
         guard !lineageBroken else { throw MultimodalConversationError.lineageBroken }
         guard !generating, !resetting else { throw MultimodalConversationError.busy }
-        guard let staged = pending else {
+        let continuation = pendingContinuation
+        guard pending != nil || continuation != nil else {
             throw MultimodalConversationError.emptyTurn
         }
         generating = true
         defer { finishGeneration() }
-        let parts = staged.parts
-        let images = staged.images
+        let parts = pending?.parts ?? []
+        let images = pending?.images ?? []
         let imageCount = parts.filter {
             if case .image = $0 { return true } else { return false }
         }.count
@@ -503,8 +589,16 @@ public actor MultimodalConversation {
         }
 
         let cached = kvTokenIDs.count
-        let turn = try await encodeTurn(parts: parts, images: images,
+        var turn: EncodedTurn
+        if let continuation {
+            turn = EncodedTurn(effectiveTokenIDs: continuation, prefillInput: nil)
+        } else {
+            turn = try await encodeTurn(parts: parts, images: images,
                                         checkCancellation: checkCancellation)
+        }
+        if cached == 0, !openingPreamble.isEmpty {
+            turn = try turn.opening(with: openingPreamble, bosID: tokenizer.bosID)
+        }
         // A run that stopped on max tokens or was cancelled left its final
         // token outside the KV. Replay it ahead of this turn, exactly as the
         // server's prefix cache does, or the model's context is missing a
@@ -607,6 +701,7 @@ public actor MultimodalConversation {
         // pending let a repeated generate() append the same user turn again,
         // behind its own reply, and corrupt the rest of the conversation.
         pending = nil
+        pendingContinuation = nil
         kvTokenIDs = result.kvBackedTokenIDs
         // A stop-string match discards the text of the tokens that formed it,
         // but all except the final one were already committed to the KV. Left
@@ -794,6 +889,29 @@ public actor MultimodalConversation {
     private struct EncodedTurn {
         let effectiveTokenIDs: [Int32]
         let prefillInput: MultimodalPrefillInput?
+
+        /// This turn as the conversation's first, behind `preamble`, which
+        /// brings its own `<bos>` and so takes the place of the turn's.
+        func opening(with preamble: [Int32], bosID: Int32) throws -> EncodedTurn {
+            guard effectiveTokenIDs.first == bosID else {
+                throw GFTokenizerError.invalidChatTemplate(
+                    "an opening turn must begin with <bos>")
+            }
+            let shift = preamble.count - 1
+            return EncodedTurn(
+                effectiveTokenIDs: preamble + effectiveTokenIDs.dropFirst(),
+                prefillInput: try prefillInput.map {
+                    try MultimodalPrefillInput(
+                        effectiveTokenIDs: preamble + $0.effectiveTokenIDs.dropFirst(),
+                        embeddingTokenIDs: preamble + $0.embeddingTokenIDs.dropFirst(),
+                        imageSpans: $0.imageSpans.map {
+                            MultimodalImageSpan(
+                                tokenRange: ($0.tokenRange.lowerBound + shift)
+                                    ..< ($0.tokenRange.upperBound + shift),
+                                features: $0.features)
+                        })
+                })
+        }
     }
 
     private func encodeTurn(

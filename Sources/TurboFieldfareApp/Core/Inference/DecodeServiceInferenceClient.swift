@@ -219,7 +219,8 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                         runtimeOptions: Self.decodeRuntimeOptions(request.runtimeOptions),
                         generationID: generationID,
                         conversationEpoch: request.conversationEpoch,
-                        turnIndex: request.turnIndex)
+                        turnIndex: request.turnIndex,
+                        webSearchEnabled: request.webSearchEnabled)
                     try write(.generate(command), to: handles.input,
                               expecting: handles.responses)
 

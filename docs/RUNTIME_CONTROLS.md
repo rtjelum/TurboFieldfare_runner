@@ -23,6 +23,28 @@ Generation controls apply to the next request and do not require a model
 reload. They are interactive product settings, not the fixed community
 benchmark protocol.
 
+## Web search
+
+The Mac app can give the model one tool, `web_search`. **Tools > Web Search**
+in the right pane controls it; it is on by default and remembered across
+launches. The CLI and the local server are unaffected: the server already
+passes a client's own tool schemas through and never runs a tool itself.
+
+| Aspect | Behavior |
+| --- | --- |
+| Backend | DuckDuckGo's keyless HTML results page. It is not an API: a layout change or a bot challenge is reported to the model and in the transcript as a failed search, never as "no results". |
+| What leaves the Mac | Only the query text the model writes, sent over HTTPS with no cookies. |
+| Scope | Title, URL and excerpt of up to 5 results. Pages are not fetched. |
+| Per message | Up to 3 searches; after that the model is told to answer with what it has. |
+| Context | A new chat spends about 120 tokens declaring the tool, and each search adds its results. Results are trimmed from the bottom when the context is nearly full. |
+| When it applies | From the next **New Chat**. The declaration is part of a chat's opening tokens, and a retained KV cannot be rewritten. Switching the setting off refuses searches at once, including in chats that declared the tool. |
+| Stop | **Stop** during a search abandons it and ends the turn. |
+
+A search and the answer that follows are one assistant turn: saved chats replay
+the call, the results and the answer exactly as the model saw them. Fetched text
+is stripped of anything the tokenizer would read as a control token before it
+enters the context. Treat what the model reports from the web as unverified.
+
 ## Runtime settings
 
 The CLI and the [local server](OPENAI_SERVER.md) accept these flags with the
