@@ -112,9 +112,10 @@ import TurboFieldfare
         let secondRun = try #require(second.diagnostics)
         #expect(stub.queries.withLock { $0.count } == 2)
         #expect(second.text.contains("example.com/zorblat"))
-        #expect(secondRun.conversationTokens == restored
-            + (secondRun.promptTokenIDs?.count ?? 0)
-            + (secondRun.generatedTokenIDs?.count ?? 0))
+        let secondPrompt: Int = secondRun.promptTokenIDs?.count ?? 0
+        let secondGenerated: Int = secondRun.generatedTokenIDs?.count ?? 0
+        let expectedTokens: Int = restored + secondPrompt + secondGenerated
+        #expect(secondRun.conversationTokens == expectedTokens)
 
         // Switched off, a declared tool is refused rather than run.
         let third = try await send(
